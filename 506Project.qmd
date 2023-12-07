@@ -1,0 +1,598 @@
+---
+title: "506Project"
+author: "Jiaqi Sun"
+format: 
+  html:
+    embed-resources: true
+editor: visual
+---
+
+GitHub repository: [GitHub](https://github.com/AlanGalaxy/506Project)
+
+## SAS
+
+``` sas
+/* input and output paths: ------------------------------------------------- */
+%let in_path = ~/506Project/;
+%let out_path = ~/506Project/;
+libname in_lib "&in_path.";
+libname out_lib "&out_path.";
+run;
+
+/* Create a data set cbecs referring to existing file: -------------------- */
+data cbecs;
+  set in_lib.cbecs2018_final_public_20221205;
+run;
+
+/* view the contents of this file: ----------------------------------------- */
+proc contents data = cbecs;
+run;
+
+/* use sql to create cbesc_data, which contains useful variables: --------------- */
+proc sql;
+	create table work.cbesc_data as
+	select PBA, SQFT, NFLOOR, BASEMNT, ATTIC, FLCEILHT, YRCONC, RFTILT, 
+	DAYLTP, WLCNS, RFCNS, SKYLT, GLSSPC, WINTYP, REFL, TINT, OWNOCC, OWNOPR, WKHRS, 
+	NWKER, PUBCLIM, HDD65, CDD65, RENOV, RENRFF, RENWIN, RENLGT, RENHVC, RENPLB, RENELC, 
+	MFBTU, MFHTBTU, MFCLBTU, MFVNBTU, MFLTBTU
+	  from cbecs;
+quit;
+
+/* use sql to create cbecs_weight, which contains useful weights: --------------- */
+proc sql;
+	create table work.cbecs_weight as
+	select *
+	  from cbecs(keep=FINALWT FINALWT1-FINALWT151);
+quit;
+
+/* save the two tables in outlib: ----------------------------------------- */
+data out_lib.cbesc_data;
+    set work.cbesc_data;
+run;
+
+data out_lib.cbecs_weight;
+    set work.cbecs_weight;
+run;
+```
+
+## R
+
+```{r}
+library(survey)
+library(spatstat)
+library(dplyr) 
+library(haven)
+library(jtools)
+```
+
+Load the data
+
+```{r}
+Weights_original <- read_sas("D:/Code/R/506Project/cbecs_weight.sas7bdat")
+cbecs_original <- read_sas("D:/Code/R/506Project/cbesc_data.sas7bdat")
+
+cbecs_full <- cbind(cbecs_original, Weights_original)
+```
+
+Clean the data
+
+```{r}
+cbecs_full <- cbecs_full %>%
+  filter(!(PBA %in% c(5, 11))) %>% 
+  mutate(NFLOOR = ifelse(NFLOOR == 994, 12, NFLOOR)) %>%
+  filter(NFLOOR != 995) %>% 
+  mutate(BASEMNT = coalesce(BASEMNT, 0)) %>% 
+  mutate(BASEMNT = ifelse(BASEMNT == 995, 5, BASEMNT)) %>%
+  mutate(FLCEILHT = ifelse(FLCEILHT == 995, 50, FLCEILHT)) %>% 
+  mutate(DAYLTP = coalesce(DAYLTP, 0)) %>% 
+  mutate(SKYLT = coalesce(SKYLT, 2)) %>% 
+  mutate(REFL = coalesce(REFL, 2)) %>% 
+  mutate(TINT = coalesce(TINT, 2)) %>% 
+  mutate(OWNOCC = coalesce(OWNOCC, 3)) %>% 
+  mutate(RENOV = coalesce(RENOV, 2)) %>% 
+  mutate(RENRFF = coalesce(RENRFF, 2)) %>% 
+  mutate(RENWIN = coalesce(RENWIN, 2)) %>% 
+  mutate(RENLGT = coalesce(RENLGT, 2)) %>% 
+  mutate(RENHVC = coalesce(RENHVC, 2)) %>% 
+  mutate(RENPLB = coalesce(RENPLB, 2)) %>% 
+  mutate(RENELC = coalesce(RENELC, 2)) %>% 
+  filter(!is.na(MFBTU)) %>% 
+  mutate(type_RENOV = case_when(
+    YRCONC %in% c(8, 9) ~ 2,
+    YRCONC %in% 2:7 & RENOV == 2 ~ 1,
+    YRCONC %in% 2:7 & RENOV == 1 ~ 3
+  )) %>% 
+  mutate(type_RENRFF = case_when(
+    YRCONC %in% c(8, 9) ~ 2,
+    YRCONC %in% 2:7 & RENRFF == 2 ~ 1,
+    YRCONC %in% 2:7 & RENRFF == 1 ~ 3
+  )) %>% 
+  mutate(type_RENWIN = case_when(
+    YRCONC %in% c(8, 9) ~ 2,
+    YRCONC %in% 2:7 & RENWIN == 2 ~ 1,
+    YRCONC %in% 2:7 & RENWIN == 1 ~ 3
+  )) %>% 
+  mutate(type_RENLGT = case_when(
+    YRCONC %in% c(8, 9) ~ 2,
+    YRCONC %in% 2:7 & RENLGT == 2 ~ 1,
+    YRCONC %in% 2:7 & RENLGT == 1 ~ 3
+  )) %>% 
+  mutate(type_RENHVC = case_when(
+    YRCONC %in% c(8, 9) ~ 2,
+    YRCONC %in% 2:7 & RENHVC == 2 ~ 1,
+    YRCONC %in% 2:7 & RENHVC == 1 ~ 3
+  )) %>% 
+  mutate(type_RENPLB = case_when(
+    YRCONC %in% c(8, 9) ~ 2,
+    YRCONC %in% 2:7 & RENPLB == 2 ~ 1,
+    YRCONC %in% 2:7 & RENPLB == 1 ~ 3
+  )) %>% 
+  mutate(type_RENELC = case_when(
+    YRCONC %in% c(8, 9) ~ 2,
+    YRCONC %in% 2:7 & RENELC == 2 ~ 1,
+    YRCONC %in% 2:7 & RENELC == 1 ~ 3
+  )) %>% 
+  mutate(TOTEUI = MFBTU / SQFT, 
+         HTEUI = MFHTBTU / SQFT, 
+         CLEUI = MFCLBTU / SQFT, 
+         LTEUI = MFLTBTU / SQFT, 
+         VNEUI = MFVNBTU / SQFT) %>% 
+  mutate(RENRFF = ifelse(RENRFF == 2, 0, RENRFF)) %>% 
+  mutate(RENWIN = ifelse(RENWIN == 2, 0, RENWIN)) %>% 
+  mutate(RENLGT = ifelse(RENLGT == 2, 0, RENLGT)) %>% 
+  mutate(RENHVC = ifelse(RENHVC == 2, 0, RENHVC)) %>% 
+  mutate(RENPLB = ifelse(RENPLB == 2, 0, RENPLB)) %>% 
+  mutate(RENELC = ifelse(RENELC == 2, 0, RENELC)) %>% 
+  
+  mutate(RENRFF = ifelse(YRCONC == 8 | YRCONC == 9, 0, RENRFF)) %>% 
+  mutate(RENWIN = ifelse(YRCONC == 8 | YRCONC == 9, 0, RENWIN)) %>% 
+  mutate(RENLGT = ifelse(YRCONC == 8 | YRCONC == 9, 0, RENLGT)) %>% 
+  mutate(RENHVC = ifelse(YRCONC == 8 | YRCONC == 9, 0, RENHVC)) %>% 
+  mutate(RENPLB = ifelse(YRCONC == 8 | YRCONC == 9, 0, RENPLB)) %>% 
+  mutate(RENELC = ifelse(YRCONC == 8 | YRCONC == 9, 0, RENELC))
+```
+
+Assign the weights variables
+
+```{r}
+samp_wts <- cbecs_full$FINALWT
+rep_wts <- cbecs_full[, grepl("^FINALWT", names(cbecs_full))]
+rep_wts$FINALWT<-NULL
+```
+
+Set factors
+
+```{r}
+cbecs <- cbecs_full[, -(36:187)]
+cbecs$PBA <- as.factor(cbecs$PBA)
+cbecs$NFLOOR <- as.factor(cbecs$NFLOOR)
+cbecs$ATTIC <- as.factor(cbecs$ATTIC)
+cbecs$YRCONC <- as.factor(cbecs$YRCONC)
+cbecs$RFTILT <- as.factor(cbecs$RFTILT)
+cbecs$WLCNS <- as.factor(cbecs$WLCNS)
+cbecs$RFCNS <- as.factor(cbecs$RFCNS)
+cbecs$SKYLT <- as.factor(cbecs$SKYLT)
+cbecs$GLSSPC <- as.factor(cbecs$GLSSPC)
+cbecs$WINTYP <- as.factor(cbecs$WINTYP)
+cbecs$REFL <- as.factor(cbecs$REFL)
+cbecs$TINT <- as.factor(cbecs$TINT)
+cbecs$OWNOCC <- as.factor(cbecs$OWNOCC)
+cbecs$OWNOPR <- as.factor(cbecs$OWNOPR)
+cbecs$PUBCLIM <- as.factor(cbecs$PUBCLIM)
+cbecs$type_RENOV <- as.factor(cbecs$type_RENOV)
+cbecs$type_RENRFF <- as.factor(cbecs$type_RENRFF)
+cbecs$type_RENWIN <- as.factor(cbecs$type_RENWIN)
+cbecs$type_RENLGT <- as.factor(cbecs$type_RENLGT)
+cbecs$type_RENHVC <- as.factor(cbecs$type_RENHVC)
+cbecs$type_RENPLB <- as.factor(cbecs$type_RENPLB)
+cbecs$type_RENELC <- as.factor(cbecs$type_RENELC)
+```
+
+Survey design
+
+```{r}
+samp_design <- svrepdesign(weights=samp_wts, repweights=rep_wts,
+                           type="JK2", mse=TRUE, data=cbecs)
+```
+
+## Simple Linear Regression Model
+
+```{r}
+mod1 <- svyglm(TOTEUI ~ type_RENWIN, design = samp_design, data = cbecs)
+summ(mod1, digits = 5)
+attr(summ(mod1), "rsq")
+p1 <- summ(mod1)$coeftable[, 4]
+c1 <- summ(mod1)$coeftable[, 1]
+
+mod2 <- svyglm(TOTEUI ~ type_RENRFF, design = samp_design, data = cbecs)
+summ(mod2, digits = 5)
+attr(summ(mod2), "rsq")
+p2 <- summ(mod2)$coeftable[, 4]
+c2 <- summ(mod2)$coeftable[, 1]
+
+mod3 <- svyglm(TOTEUI ~ type_RENLGT, design = samp_design, data = cbecs)
+summ(mod3, digits = 5)
+attr(summ(mod3), "rsq")
+p3 <- summ(mod3)$coeftable[, 4]
+c3 <- summ(mod3)$coeftable[, 1]
+
+mod4 <- svyglm(TOTEUI ~ type_RENHVC, design = samp_design, data = cbecs)
+summ(mod4, digits = 5)
+attr(summ(mod4), "rsq")
+p4 <- summ(mod4)$coeftable[, 4]
+c4 <- summ(mod4)$coeftable[, 1]
+
+mod5 <- svyglm(TOTEUI ~ type_RENPLB, design = samp_design, data = cbecs)
+summ(mod5, digits = 5)
+attr(summ(mod5), "rsq")
+p5 <- summ(mod5)$coeftable[, 4]
+c5 <- summ(mod5)$coeftable[, 1]
+
+mod6 <- svyglm(TOTEUI ~ type_RENELC, design = samp_design, data = cbecs)
+summ(mod6, digits = 5)
+attr(summ(mod6), "rsq")
+p6 <- summ(mod6)$coeftable[, 4]
+c6 <- summ(mod6)$coeftable[, 1]
+p_value <- data.frame(TOT_c = c(c1, c2, c3, c4, c5, c6), 
+                      TOT_p = c(p1, p2, p3, p4, p5, p6))
+
+####
+mod1 <- svyglm(CLEUI ~ type_RENWIN, design = samp_design, data = cbecs)
+summ(mod1, digits = 5)
+attr(summ(mod1), "rsq")
+p1 <- summ(mod1)$coeftable[, 4]
+c1 <- summ(mod1)$coeftable[, 1]
+
+mod2 <- svyglm(CLEUI ~ type_RENRFF, design = samp_design, data = cbecs)
+summ(mod2, digits = 5)
+attr(summ(mod2), "rsq")
+p2 <- summ(mod2)$coeftable[, 4]
+c2 <- summ(mod2)$coeftable[, 1]
+
+mod3 <- svyglm(CLEUI ~ type_RENLGT, design = samp_design, data = cbecs)
+summ(mod3, digits = 5)
+attr(summ(mod3), "rsq")
+p3 <- summ(mod3)$coeftable[, 4]
+c3 <- summ(mod3)$coeftable[, 1]
+
+mod4 <- svyglm(CLEUI ~ type_RENHVC, design = samp_design, data = cbecs)
+summ(mod4, digits = 5)
+attr(summ(mod4), "rsq")
+p4 <- summ(mod4)$coeftable[, 4]
+c4 <- summ(mod4)$coeftable[, 1]
+
+mod5 <- svyglm(CLEUI ~ type_RENPLB, design = samp_design, data = cbecs)
+summ(mod5, digits = 5)
+attr(summ(mod5), "rsq")
+p5 <- summ(mod5)$coeftable[, 4]
+c5 <- summ(mod5)$coeftable[, 1]
+
+mod6 <- svyglm(CLEUI ~ type_RENELC, design = samp_design, data = cbecs)
+summ(mod6, digits = 5)
+attr(summ(mod6), "rsq")
+p6 <- summ(mod6)$coeftable[, 4]
+c6 <- summ(mod6)$coeftable[, 1]
+p_value$CL_c <- c(c1, c2, c3, c4, c5, c6)
+p_value$CL_p <- c(p1, p2, p3, p4, p5, p6)
+
+
+###
+mod1 <- svyglm(HTEUI ~ type_RENWIN, design = samp_design, data = cbecs)
+summ(mod1, digits = 5)
+attr(summ(mod1), "rsq")
+p1 <- summ(mod1)$coeftable[, 4]
+c1 <- summ(mod1)$coeftable[, 1]
+
+mod2 <- svyglm(HTEUI ~ type_RENRFF, design = samp_design, data = cbecs)
+summ(mod2, digits = 5)
+attr(summ(mod2), "rsq")
+p2 <- summ(mod2)$coeftable[, 4]
+c2 <- summ(mod2)$coeftable[, 1]
+
+mod3 <- svyglm(HTEUI ~ type_RENLGT, design = samp_design, data = cbecs)
+summ(mod3, digits = 5)
+attr(summ(mod3), "rsq")
+p3 <- summ(mod3)$coeftable[, 4]
+c3 <- summ(mod3)$coeftable[, 1]
+
+mod4 <- svyglm(HTEUI ~ type_RENHVC, design = samp_design, data = cbecs)
+summ(mod4, digits = 5)
+attr(summ(mod4), "rsq")
+p4 <- summ(mod4)$coeftable[, 4]
+c3 <- summ(mod3)$coeftable[, 1]
+
+mod5 <- svyglm(HTEUI ~ type_RENPLB, design = samp_design, data = cbecs)
+summ(mod5, digits = 5)
+attr(summ(mod5), "rsq")
+p5 <- summ(mod5)$coeftable[, 4]
+c4 <- summ(mod4)$coeftable[, 1]
+
+mod6 <- svyglm(HTEUI ~ type_RENELC, design = samp_design, data = cbecs)
+summ(mod6, digits = 5)
+attr(summ(mod6), "rsq")
+p6 <- summ(mod6)$coeftable[, 4]
+c6 <- summ(mod6)$coeftable[, 1]
+p_value$HT_c <- c(c1, c2, c3, c4, c5, c6)
+p_value$HT_p <- c(p1, p2, p3, p4, p5, p6)
+
+
+###
+mod1 <- svyglm(VNEUI ~ type_RENWIN, design = samp_design, data = cbecs)
+summ(mod1, digits = 5)
+attr(summ(mod1), "rsq")
+p1 <- summ(mod1)$coeftable[, 4]
+c1 <- summ(mod1)$coeftable[, 1]
+
+mod2 <- svyglm(VNEUI ~ type_RENRFF, design = samp_design, data = cbecs)
+summ(mod2, digits = 5)
+attr(summ(mod2), "rsq")
+p2 <- summ(mod2)$coeftable[, 4]
+c2 <- summ(mod2)$coeftable[, 1]
+
+mod3 <- svyglm(VNEUI ~ type_RENLGT, design = samp_design, data = cbecs)
+summ(mod3, digits = 5)
+attr(summ(mod3), "rsq")
+p3 <- summ(mod3)$coeftable[, 4]
+c3 <- summ(mod3)$coeftable[, 1]
+
+mod4 <- svyglm(VNEUI ~ type_RENHVC, design = samp_design, data = cbecs)
+summ(mod4, digits = 5)
+attr(summ(mod4), "rsq")
+p4 <- summ(mod4)$coeftable[, 4]
+c4 <- summ(mod4)$coeftable[, 1]
+
+mod5 <- svyglm(VNEUI ~ type_RENPLB, design = samp_design, data = cbecs)
+summ(mod5, digits = 5)
+attr(summ(mod5), "rsq")
+p5 <- summ(mod5)$coeftable[, 4]
+c5 <- summ(mod5)$coeftable[, 1]
+
+mod6 <- svyglm(VNEUI ~ type_RENELC, design = samp_design, data = cbecs)
+summ(mod6, digits = 5)
+attr(summ(mod6), "rsq")
+p6 <- summ(mod6)$coeftable[, 4]
+c6 <- summ(mod6)$coeftable[, 1]
+p_value$VN_c <- c(c1, c2, c3, c4, c5, c6)
+p_value$VN_p <- c(p1, p2, p3, p4, p5, p6)
+
+
+###
+mod1 <- svyglm(LTEUI ~ type_RENWIN, design = samp_design, data = cbecs)
+summ(mod1, digits = 5)
+attr(summ(mod1), "rsq")
+p1 <- summ(mod1)$coeftable[, 4]
+c1 <- summ(mod1)$coeftable[, 1]
+
+mod2 <- svyglm(LTEUI ~ type_RENRFF, design = samp_design, data = cbecs)
+summ(mod2, digits = 5)
+attr(summ(mod2), "rsq")
+p2 <- summ(mod2)$coeftable[, 4]
+c2 <- summ(mod2)$coeftable[, 1]
+
+mod3 <- svyglm(LTEUI ~ type_RENLGT, design = samp_design, data = cbecs)
+summ(mod3, digits = 5)
+attr(summ(mod3), "rsq")
+p3 <- summ(mod3)$coeftable[, 4]
+c3 <- summ(mod3)$coeftable[, 1]
+
+mod4 <- svyglm(LTEUI ~ type_RENHVC, design = samp_design, data = cbecs)
+summ(mod4, digits = 5)
+attr(summ(mod4), "rsq")
+p4 <- summ(mod4)$coeftable[, 4]
+c4 <- summ(mod4)$coeftable[, 1]
+
+mod5 <- svyglm(LTEUI ~ type_RENPLB, design = samp_design, data = cbecs)
+summ(mod5, digits = 5)
+attr(summ(mod5), "rsq")
+p5 <- summ(mod5)$coeftable[, 4]
+c5 <- summ(mod5)$coeftable[, 1]
+
+mod6 <- svyglm(LTEUI ~ type_RENELC, design = samp_design, data = cbecs)
+summ(mod6, digits = 5)
+attr(summ(mod6), "rsq")
+p6 <- summ(mod6)$coeftable[, 4]
+c6 <- summ(mod6)$coeftable[, 1]
+p_value$LT_c <- c(c1, c2, c3, c4, c5, c6)
+p_value$LT_p <- c(p1, p2, p3, p4, p5, p6)
+```
+
+Save the coefficients and $R^2$.
+
+```{r}
+row.names(p_value) <- c("RENWIN1(Ref)", "RENWIN2", "RENWIN3", "RENRFF1(Ref)" , "RENRFF2", 
+                        "RENRFF3", "RENLGT1(Ref)", "RENLGT2", "RENLGT3", "RENHVC1(Ref)", 
+                        "RENHVC2", "RENHVC3", "RENPLB1(Ref)", "RENPLB2", "RENPLB3", 
+                        "RENELC1(Ref)", "RENELC2", "RENELC3")
+# write.csv(p_value, file = "p_values.csv")
+```
+
+## Multiple Linear Regression Model
+
+```{r}
+#full total
+mod1 <- svyglm(TOTEUI ~ PBA + SQFT + NFLOOR + BASEMNT + ATTIC + FLCEILHT + 
+                 RFTILT + DAYLTP + WLCNS + RFCNS + SKYLT + GLSSPC + 
+                 WINTYP + REFL + TINT + OWNOCC + OWNOPR + WKHRS + NWKER + 
+                 PUBCLIM + HDD65 + CDD65 + type_RENWIN + RENRFF + RENLGT + 
+                 RENHVC + RENPLB + RENELC, design = samp_design, data = cbecs)
+summ(mod1, digits = 5)
+attr(summ(mod1), "rsq")
+p1 <- summ(mod1)$coeftable[, 4]
+c1 <- summ(mod1)$coeftable[, 1]
+
+mod2 <- svyglm(TOTEUI ~ PBA + SQFT + NFLOOR + 
+                 RFTILT + RFCNS + GLSSPC + 
+                 WKHRS + NWKER + HDD65 + CDD65 + 
+                 type_RENWIN + RENLGT + RENPLB, design = samp_design, data = cbecs)
+summ(mod2, digits = 5)
+attr(summ(mod2), "rsq")
+p2 <- summ(mod2)$coeftable[, 4]
+c2 <- summ(mod2)$coeftable[, 1]
+
+#full cooling
+mod3 <- svyglm(CLEUI ~ PBA + SQFT + NFLOOR + BASEMNT + ATTIC + FLCEILHT + 
+                 RFTILT + DAYLTP + WLCNS + RFCNS + SKYLT + GLSSPC + 
+                 WINTYP + REFL + TINT + OWNOCC + OWNOPR + WKHRS + NWKER + 
+                 PUBCLIM + HDD65 + CDD65 + type_RENWIN + RENRFF + RENLGT + 
+                 RENHVC + RENPLB + RENELC, design = samp_design, data = cbecs)
+summ(mod3, digits = 5)
+attr(summ(mod3), "rsq")
+p3 <- summ(mod3)$coeftable[, 4]
+c3 <- summ(mod3)$coeftable[, 1]
+
+mod4 <- svyglm(CLEUI ~ PBA + SQFT + NFLOOR + BASEMNT + 
+                 GLSSPC + 
+                 WINTYP + REFL + OWNOCC + WKHRS + 
+                 PUBCLIM + CDD65 + type_RENWIN + RENLGT + 
+                 RENHVC, design = samp_design, data = cbecs)
+summ(mod4, digits = 5)
+attr(summ(mod4), "rsq")
+p4 <- summ(mod4)$coeftable[, 4]
+c4 <- summ(mod4)$coeftable[, 1]
+
+# full heating
+mod5 <- svyglm(HTEUI ~ PBA + SQFT + NFLOOR + BASEMNT + ATTIC + FLCEILHT + 
+                 RFTILT + DAYLTP + WLCNS + RFCNS + SKYLT + GLSSPC + 
+                 WINTYP + REFL + TINT + OWNOCC + OWNOPR + WKHRS + NWKER + 
+                 PUBCLIM + HDD65 + CDD65 + type_RENWIN + RENRFF + RENLGT + 
+                 RENHVC + RENPLB + RENELC, design = samp_design, data = cbecs)
+summ(mod5, digits = 5)
+attr(summ(mod5), "rsq")
+p5 <- summ(mod5)$coeftable[, 4]
+c5 <- summ(mod5)$coeftable[, 1]
+
+mod6 <- svyglm(HTEUI ~ PBA + SQFT + FLCEILHT + 
+                 WLCNS + RFCNS + SKYLT + GLSSPC + 
+                 WINTYP + REFL + WKHRS + 
+                 HDD65 + type_RENWIN + RENRFF + RENLGT + 
+                 RENPLB, design = samp_design, data = cbecs)
+summ(mod6, digits = 5)
+attr(summ(mod6), "rsq")
+p6 <- summ(mod6)$coeftable[, 4]
+c6 <- summ(mod6)$coeftable[, 1]
+
+# full light
+mod7 <- svyglm(LTEUI ~ PBA + SQFT + NFLOOR + BASEMNT + ATTIC + FLCEILHT + 
+                 RFTILT + DAYLTP + WLCNS + RFCNS + SKYLT + GLSSPC + 
+                 WINTYP + REFL + TINT + OWNOCC + OWNOPR + WKHRS + NWKER + 
+                 PUBCLIM + HDD65 + CDD65 + type_RENWIN + RENRFF + RENLGT + 
+                 RENHVC + RENPLB + RENELC, design = samp_design, data = cbecs)
+summ(mod7, digits = 5)
+attr(summ(mod7), "rsq")
+p7 <- summ(mod7)$coeftable[, 4]
+c7 <- summ(mod7)$coeftable[, 1]
+
+mod8 <- svyglm(LTEUI ~ PBA + SQFT + NFLOOR + 
+                 RFCNS + GLSSPC + 
+                 WINTYP + WKHRS + NWKER + 
+                 PUBCLIM + type_RENWIN + RENLGT
+                 , design = samp_design, data = cbecs)
+summ(mod8, digits = 5)
+attr(summ(mod8), "rsq")
+p8 <- summ(mod8)$coeftable[, 4]
+c8 <- summ(mod8)$coeftable[, 1]
+
+# full ventilation
+mod9 <- svyglm(VNEUI ~ PBA + SQFT + NFLOOR + BASEMNT + ATTIC + FLCEILHT + 
+                 RFTILT + DAYLTP + WLCNS + RFCNS + SKYLT + GLSSPC + 
+                 WINTYP + REFL + TINT + OWNOCC + OWNOPR + WKHRS + NWKER + 
+                 PUBCLIM + HDD65 + CDD65 + type_RENWIN + RENRFF + RENLGT + 
+                 RENHVC + RENPLB + RENELC, design = samp_design, data = cbecs)
+summ(mod9, digits = 5)
+attr(summ(mod9), "rsq")
+p9 <- summ(mod9)$coeftable[, 4]
+c9 <- summ(mod9)$coeftable[, 1]
+
+mod10 <- svyglm(VNEUI ~ PBA + SQFT + NFLOOR + 
+                 RFTILT + 
+                 WINTYP + OWNOCC + WKHRS + NWKER + 
+                 type_RENWIN + 
+                 RENHVC + RENPLB, design = samp_design, data = cbecs)
+summ(mod10, digits = 5)
+attr(summ(mod10), "rsq")
+p10 <- summ(mod10)$coeftable[, 4]
+c10 <- summ(mod10)$coeftable[, 1]
+```
+
+Save the coefficients and $R^2$.
+
+```{r}
+full_model <- data.frame(TOT_coef = c1, 
+                         TOT_p_value = p1, 
+                         CL_coef = c3, 
+                         CL_p_value = p3, 
+                         HT_coef = c5, 
+                         HT_p_value = p5, 
+                         LT_coef = c7, 
+                         LT_p_value = p7, 
+                         VN_coef = c9, 
+                         VN_p_value = p9)
+
+row.names(full_model) <- row.names(summ(mod9)$coeftable)
+
+pruned_model_TOT <- data.frame(TOT_coef = c2, TOT_p_value = p2)
+row.names(pruned_model_TOT) <- row.names(summ(mod2)$coeftable)
+pruned_model_CL <- data.frame(CL_coef = c4, CL_p_value = p4)
+row.names(pruned_model_CL) <- row.names(summ(mod4)$coeftable)
+pruned_model_HT <- data.frame(HT_coef = c6, HT_p_value = p6)
+row.names(pruned_model_HT) <- row.names(summ(mod6)$coeftable)
+pruned_model_LT <- data.frame(LT_coef = c8, LT_p_value = p8)
+row.names(pruned_model_LT) <- row.names(summ(mod8)$coeftable)
+pruned_model_VN <- data.frame(VN_coef = c10, VN_p_value = p10)
+row.names(pruned_model_VN) <- row.names(summ(mod10)$coeftable)
+
+
+
+# write.csv(full_model, file = "full_model.csv")
+# write.csv(pruned_model_TOT, file = "pruned_model_TOT.csv")
+# write.csv(pruned_model_CL, file = "pruned_model_CL.csv")
+# write.csv(pruned_model_HT, file = "pruned_model_HT.csv")
+# write.csv(pruned_model_LT, file = "pruned_model_LT.csv")
+# write.csv(pruned_model_VN, file = "pruned_model_VN.csv")
+```
+
+## Plots
+
+```{r}
+library(ggplot2)
+
+ggplot(cbecs, aes(x = type_RENOV, y = TOTEUI, color = type_RENOV)) +
+  geom_jitter(position = position_jitter(width = 0.3), alpha = 0.3) + 
+  geom_boxplot(fill = "transparent", color = "black") +
+  scale_color_manual(values = c("1" = "red", "2" = "blue", "3" = "green"),
+                     labels = c("1" = "Non-upgraded aged building", 
+                                "2" = "New building", 
+                                "3" = "Upgraded aged building"))
+
+ggplot(cbecs, aes(x = type_RENOV, y = CLEUI, color = type_RENOV)) +
+  geom_jitter(position = position_jitter(width = 0.3), alpha = 0.3) + 
+  geom_boxplot(fill = "transparent", color = "black") +
+  scale_color_manual(values = c("1" = "red", "2" = "blue", "3" = "green"),
+                     labels = c("1" = "Non-upgraded aged building", 
+                                "2" = "New building", 
+                                "3" = "Upgraded aged building"))
+
+ggplot(cbecs, aes(x = type_RENOV, y = HTEUI, color = type_RENOV)) +
+  geom_jitter(position = position_jitter(width = 0.3), alpha = 0.3) + 
+  geom_boxplot(fill = "transparent", color = "black") +
+  scale_color_manual(values = c("1" = "red", "2" = "blue", "3" = "green"),
+                     labels = c("1" = "Non-upgraded aged building", 
+                                "2" = "New building", 
+                                "3" = "Upgraded aged building"))
+
+ggplot(cbecs, aes(x = type_RENOV, y = VNEUI, color = type_RENOV)) +
+  geom_jitter(position = position_jitter(width = 0.3), alpha = 0.3) + 
+  geom_boxplot(fill = "transparent", color = "black") +
+  scale_color_manual(values = c("1" = "red", "2" = "blue", "3" = "green"),
+                     labels = c("1" = "Non-upgraded aged building", 
+                                "2" = "New building", 
+                                "3" = "Upgraded aged building"))
+
+ggplot(cbecs, aes(x = type_RENOV, y = LTEUI, color = type_RENOV)) +
+  geom_jitter(position = position_jitter(width = 0.3), alpha = 0.3) + 
+  geom_boxplot(fill = "transparent", color = "black") +
+  scale_color_manual(values = c("1" = "red", "2" = "blue", "3" = "green"),
+                     labels = c("1" = "Non-upgraded aged building", 
+                                "2" = "New building", 
+                                "3" = "Upgraded aged building"))
+```
